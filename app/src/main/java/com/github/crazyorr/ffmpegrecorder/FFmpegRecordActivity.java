@@ -27,6 +27,9 @@ import com.github.crazyorr.ffmpegrecorder.data.FrameToRecord;
 import com.github.crazyorr.ffmpegrecorder.data.RecordFragment;
 import com.github.crazyorr.ffmpegrecorder.util.CameraHelper;
 import com.github.crazyorr.ffmpegrecorder.util.MiscUtils;
+import com.jwetherell.motiondetection.detection.IMotionDetection;
+import com.jwetherell.motiondetection.detection.RgbMotionDetection;
+import com.jwetherell.motiondetection.image.ImageProcessing;
 
 import org.bytedeco.javacpp.avcodec;
 import org.bytedeco.javacpp.avutil;
@@ -49,11 +52,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 import static java.lang.Thread.State.WAITING;
 
 public class FFmpegRecordActivity extends AppCompatActivity implements
-        TextureView.SurfaceTextureListener, View.OnClickListener {
+        TextureView.SurfaceTextureListener, // 전체 비디오 프레임 (TextuView) 안의 리스너. 사용할 수 있는가의 여부를 듣는다.
+        View.OnClickListener {
     private static final String LOG_TAG = FFmpegRecordActivity.class.getSimpleName();
 
-    private static final int REQUEST_PERMISSIONS = 1;
+    private static final int REQUEST_PERMISSIONS = 1; // 권한 메세지를 표시할지 여부
 
+    //프리뷰의 크기
     private static final int PREFERRED_PREVIEW_WIDTH = 640;
     private static final int PREFERRED_PREVIEW_HEIGHT = 480;
 
@@ -69,17 +74,17 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
 
     private int mCameraId;
     private Camera mCamera;
-    private FFmpegFrameRecorder mFrameRecorder;
+    private FFmpegFrameRecorder mFrameRecorder; //@javacv
     private VideoRecordThread mVideoRecordThread;
     private AudioRecordThread mAudioRecordThread;
     private volatile boolean mRecording = false;
     private File mVideo;
-    private LinkedBlockingQueue<FrameToRecord> mFrameToRecordQueue;
-    private LinkedBlockingQueue<FrameToRecord> mRecycledFrameQueue;
+    private LinkedBlockingQueue<FrameToRecord> mFrameToRecordQueue; //@ffmpegrecorder
+    private LinkedBlockingQueue<FrameToRecord> mRecycledFrameQueue; //@ffmpegrecorder
     private int mFrameToRecordCount;
     private int mFrameRecordedCount;
     private long mTotalProcessFrameTime;
-    private Stack<RecordFragment> mRecordFragments;
+    private Stack<RecordFragment> mRecordFragments; //@ffmpegrecorder
 
     private int sampleAudioRateInHz = 44100;
     /* The sides of width and height are based on camera orientation.
@@ -95,6 +100,9 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
 
     // Workaround for https://code.google.com/p/android/issues/detail?id=190966
     private Runnable doAfterAllPermissionsGranted;
+
+    //https://github.com/phishman3579/android-motion-detection
+    private IMotionDetection mDetecter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -121,6 +129,9 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         // At most recycle 2 Frame
         mRecycledFrameQueue = new LinkedBlockingQueue<>(2);
         mRecordFragments = new Stack<>();
+
+        //motion detector
+        mDetecter = new RgbMotionDetection();
     }
 
     @Override
@@ -264,6 +275,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
                     stopRecording();
                     stopRecorder();
 
+                    initRecorder();
                     startRecorder();
                     startRecording();
                     return null;
