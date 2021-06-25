@@ -9,8 +9,11 @@ import android.hardware.Camera;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.media.session.PlaybackState;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
@@ -53,7 +56,8 @@ import static java.lang.Thread.State.WAITING;
 
 public class FFmpegRecordActivity extends AppCompatActivity implements
         TextureView.SurfaceTextureListener, // 전체 비디오 프레임 (TextuView) 안의 리스너. 사용할 수 있는가의 여부를 듣는다.
-        View.OnClickListener {
+        View.OnClickListener,
+        RecordingSwitchListener {
     private static final String LOG_TAG = FFmpegRecordActivity.class.getSimpleName();
 
     private static final int REQUEST_PERMISSIONS = 1; // 권한 메세지를 표시할지 여부
@@ -77,6 +81,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
     private FFmpegFrameRecorder mFrameRecorder; //@javacv
     private VideoRecordThread mVideoRecordThread;
     private AudioRecordThread mAudioRecordThread;
+    private DetectionThread mDetectionThread;
     private volatile boolean mRecording = false;
     private File mVideo;
     private LinkedBlockingQueue<FrameToRecord> mFrameToRecordQueue; //@ffmpegrecorder
@@ -103,6 +108,8 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
 
     //https://github.com/phishman3579/android-motion-detection
     private IMotionDetection mDetecter;
+    byte[] mData = null;
+    FinishRecordingTask mFinishRecordingTask;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -132,6 +139,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
 
         //motion detector
         mDetecter = new RgbMotionDetection();
+        mFinishRecordingTask = new FinishRecordingTask();
     }
 
     @Override
@@ -356,9 +364,11 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
                 }
                 lastPreviewFrameTime = thisPreviewFrameTime;
 
+                mData = data;
+
                 // get video data
                 if (mRecording) {
-                    if (mAudioRecordThread == null || !mAudioRecordThread.isRunning()) {
+                    if (mAudioRecordThread == null || !mDetectionThread.isRunning() || !mAudioRecordThread.isRunning()) {
                         // wait for AudioRecord to init and start
                         mRecordFragments.peek().setStartTimestamp(System.currentTimeMillis());
                     } else {
@@ -500,6 +510,8 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         mAudioRecordThread.start();
         mVideoRecordThread = new VideoRecordThread();
         mVideoRecordThread.start();
+        mDetectionThread = new DetectionThread();
+        mDetectionThread.start();
     }
 
     private void stopRecording() {
@@ -515,6 +527,13 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
             }
         }
 
+        System.out.println("detection stopRunning");
+        if (mDetectionThread != null) {
+            if (mDetectionThread.isRunning()) {
+                mDetectionThread.stopRunning();
+            }
+        }
+
         try {
             if (mAudioRecordThread != null) {
                 mAudioRecordThread.join();
@@ -527,10 +546,12 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         }
         mAudioRecordThread = null;
         mVideoRecordThread = null;
+        mDetectionThread = null;
 
 
         mFrameToRecordQueue.clear();
         mRecycledFrameQueue.clear();
+        mData = null;
     }
 
     private void resumeRecording() {
@@ -570,6 +591,11 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
             recordedTime += recordFragment.getDuration();
         }
         return recordedTime;
+    }
+
+    @Override
+    public void callBack(Object object) {
+
     }
 
     class RunningThread extends Thread {
@@ -799,6 +825,74 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         }
     }
 
+    class DetectionThread extends RunningThread {
+        private int cnt;
+        private int previewWidth, previewHeight;
+        Handler mHandler = new Handler(Looper.getMainLooper());
+
+        public DetectionThread() {
+            this.cnt = 0;
+        }
+
+        @Override
+        public void run() {
+            isRunning = true;
+            previewWidth = mPreviewWidth;
+            previewHeight = mPreviewHeight;
+            while(isRunning) {
+                System.out.println("detection started"+mRecording+","+cnt);
+                int[] img = null;
+                if (mData != null) {
+                    img = ImageProcessing.decodeYUV420SPtoRGB(mData, previewWidth, previewHeight);
+                }
+                if (img != null && mDetecter.detect(img, previewWidth, previewHeight)) {
+                    // 처음 레코딩 시작 시
+                    if (!mRecording) {
+                        cnt = 1;
+                        resumeRecording();
+                    } else if (!isInDuration()) {
+                        cnt = 0;
+                        pauseRecording();
+                        System.out.println("detection pause recording");
+                        // check video length
+                        if (calculateTotalRecordedTime(mRecordFragments) < MIN_VIDEO_LENGTH) {
+                            System.out.println("detection too short");
+                            return;
+                        }
+                        isRunning = false;
+                        mHandler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                new Switch(new RecordingSwitchListener() {
+                                    @Override
+                                    public void callBack(Object object) {
+                                        new FinishRecordingTask().execute();
+                                    }
+                                }).press();
+                            }
+                        }, 0);
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void stopRunning() {
+            super.stopRunning();
+            System.out.println("detection ended"+mRecording+","+cnt);
+            cnt = 0;
+        }
+
+        private boolean isInDuration(){
+            ++cnt;
+            if(cnt >= 50) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+    }
+
     abstract class ProgressDialogTask<Params, Progress, Result> extends AsyncTask<Params, Progress, Result> {
 
         private int promptRes;
@@ -849,6 +943,21 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
             Intent intent = new Intent(FFmpegRecordActivity.this, PlaybackActivity.class);
             intent.putExtra(PlaybackActivity.INTENT_NAME_VIDEO_PATH, mVideo.getPath());
             startActivity(intent);
+        }
+    }
+
+    class Switch {
+        private RecordingSwitchListener listener;
+
+        public Switch(RecordingSwitchListener recordingSwitchListener){
+            this.listener = recordingSwitchListener;
+        }
+
+        public void press(){
+            if(this.listener != null){
+                //callback 호출
+                listener.callBack("Recording State Change");
+            }
         }
     }
 }
