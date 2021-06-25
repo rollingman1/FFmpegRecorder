@@ -9,7 +9,6 @@ import android.hardware.Camera;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.media.session.PlaybackState;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
@@ -107,7 +106,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
     private Runnable doAfterAllPermissionsGranted;
 
     //https://github.com/phishman3579/android-motion-detection
-    private IMotionDetection mDetecter;
+    private IMotionDetection mDetector;
     byte[] mData = null;
     FinishRecordingTask mFinishRecordingTask;
 
@@ -138,7 +137,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         mRecordFragments = new Stack<>();
 
         //motion detector
-        mDetecter = new RgbMotionDetection();
+        mDetector = new RgbMotionDetection();
         mFinishRecordingTask = new FinishRecordingTask();
     }
 
@@ -845,7 +844,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
                 if (mData != null) {
                     img = ImageProcessing.decodeYUV420SPtoRGB(mData, previewWidth, previewHeight);
                 }
-                if (img != null && mDetecter.detect(img, previewWidth, previewHeight)) {
+                if (img != null && mDetector.detect(img, previewWidth, previewHeight)) {
                     // 처음 레코딩 시작 시
                     if (!mRecording) {
                         cnt = 1;
@@ -866,7 +865,7 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
                                 new Switch(new RecordingSwitchListener() {
                                     @Override
                                     public void callBack(Object object) {
-                                        new FinishRecordingTask().execute();
+                                        new FinishRecordingTask(true).execute();
                                     }
                                 }).press();
                             }
@@ -923,9 +922,14 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
     }
 
     class FinishRecordingTask extends ProgressDialogTask<Void, Integer, Void> {
+        boolean restart = false;
 
         public FinishRecordingTask() {
             super(R.string.processing);
+        }
+        public FinishRecordingTask(boolean restart) {
+            super(R.string.processing);
+            this.restart = restart;
         }
 
         @Override
@@ -933,6 +937,33 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
             stopRecording();
             stopRecorder();
             releaseRecorder(false);
+            if(restart){
+                //onResume 로직 가져오
+                if (doAfterAllPermissionsGranted != null) {
+                    doAfterAllPermissionsGranted.run();
+                    doAfterAllPermissionsGranted = null;
+                } else {
+                    String[] neededPermissions = {
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.RECORD_AUDIO,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    };
+                    List<String> deniedPermissions = new ArrayList<>();
+                    for (String permission : neededPermissions) {
+                        if (ContextCompat.checkSelfPermission(FFmpegRecordActivity.this, permission) != PackageManager.PERMISSION_GRANTED) {
+                            deniedPermissions.add(permission);
+                        }
+                    }
+                    if (deniedPermissions.isEmpty()) {
+                        // All permissions are granted
+                        doAfterAllPermissionsGranted();
+                    } else {
+                        String[] array = new String[deniedPermissions.size()];
+                        array = deniedPermissions.toArray(array);
+                        ActivityCompat.requestPermissions(FFmpegRecordActivity.this, array, REQUEST_PERMISSIONS);
+                    }
+                }
+            }
             return null;
         }
 
@@ -940,9 +971,9 @@ public class FFmpegRecordActivity extends AppCompatActivity implements
         protected void onPostExecute(Void aVoid) {
             super.onPostExecute(aVoid);
 
-            Intent intent = new Intent(FFmpegRecordActivity.this, PlaybackActivity.class);
-            intent.putExtra(PlaybackActivity.INTENT_NAME_VIDEO_PATH, mVideo.getPath());
-            startActivity(intent);
+            //Intent intent = new Intent(FFmpegRecordActivity.this, PlaybackActivity.class);
+            //intent.putExtra(PlaybackActivity.INTENT_NAME_VIDEO_PATH, mVideo.getPath());
+            //startActivity(intent);
         }
     }
 
